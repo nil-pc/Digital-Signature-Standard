@@ -43,18 +43,18 @@ void randomStateInit(gmp_randstate_t state)
 	gmp_randseed_ui(state, seed);
 }
 
-void generatePrimes(mpz_t prime, gmp_randstate_t state)
+void generatePrimes(mpz_t prime, gmp_randstate_t state, mp_bitcnt_t prime_len)
 {
 	//Generate a random number
-	mpz_rrandomb(prime, state, PRIME_LENGTH);
+	mpz_rrandomb(prime, state, prime_len);
 
-  //Check if the number is Prime or not using Miller Rabin Test 
+    //Check if the number is Prime or not using Miller Rabin Test 
 	while (!(mpz_millerrabin(prime, 512)))
 	{
 		gmp_randclear(state);
 		seed++;
 		randomStateInit(state);
-		mpz_rrandomb(prime, state, PRIME_LENGTH);
+		mpz_rrandomb(prime, state, prime_len);
 	}
 	gmp_randclear(state);
 	seed++;
@@ -76,51 +76,53 @@ void getGenerator(mpz_t h, gmp_randstate_t state, mpz_t q)
     mpz_clears(r, m, NULL);
 }
 
-// Function to generate a q which divides (p-1)
-void generateQ(mpz_t q, mpz_t p , gmp_randstate_t state)
+// Function to generate p where q divides (p-1)
+void generateP(mpz_t p, mpz_t q , gmp_randstate_t state)
 {
-	mpz_t n, r;
-	mpz_inits(n, r, NULL);
-	mpz_set_ui(n, 160);
-	mpz_sub_ui(p, p, 1);
-	do
+	mpz_t r, exp;
+	mpz_inits(r,exp, NULL);
+	
+	mpz_set_ui(exp, 2);
+	mpz_pow_ui(exp, exp, 864);
+	mpz_mul(p, q, exp);
+	mpz_add_ui(r, p, 1);
+	while(!(mpz_millerrabin(r, 512)))
 	{
-		gmp_randclear(state);
-		seed++;
-		randomStateInit(state);
-		mpz_urandomb(q, state, n);
-		mpz_mod(r, p, q);	
-	}while(!(mpz_cmp_ui(r, 0)));
-	mpz_clears(r, n, NULL);
+		mpz_add(p, p, q);
+		mpz_add_ui(r, p, 1);
+	}
+	mpz_set(p, r);
+	mpz_clears(r, NULL);
 }
 
 
 //Generate a prime number p and call function to generate g
 void generatePublicKey(PublicKey* pubkey, gmp_randstate_t state)
 {
-
+    cout<<"\n.......Generating Public Key..........\n";
     mpz_t d, p;
     mpz_inits(d, p, NULL);
-	//Generate p
-	randomStateInit(state);
-	generatePrimes(pubkey->p, state);
 
 	//Generate q
 	randomStateInit(state);
-	generateQ(pubkey->q, pubkey->p, state);
+	generatePrimes(pubkey->q, state, 160);
+
+	//Generate p
+	randomStateInit(state);
+	generateP(pubkey->p, pubkey->q, state);
 
 	//Generate g
 	randomStateInit(state);
 	getGenerator(pubkey->g, state, pubkey->q);
 	mpz_sub_ui(p, pubkey->p, 1);
-	mpz_div(d, p, q);
+	mpz_div(d, p, pubkey->q);
 	mpz_powm(pubkey->g, pubkey->g, d, pubkey->p);
 }
 
 //Generate value of x
 void generatePrivateKey(PrivateKey*privkey, PublicKey* pubkey, gmp_randstate_t state)
 {
-
+    cout<<"\n.......Generating Private Key..........\n";
 	gmp_randclear(state);
 	seed++;
 	randomStateInit(state);
@@ -136,8 +138,8 @@ void keyGeneration(PrivateKey*privKey, PublicKey* pubKey, gmp_randstate_t state)
 	// Function to generate a random x to keep as secret key
 	generatePrivateKey(privKey, pubKey, state);
 
-  // Calculate value of y from g, x and p
-  // y = (g^x) mod p
+    // Calculate value of y from g, x and p
+    // y = (g^x) mod p
 	mpz_powm(pubKey->y, pubKey->g, privKey->x, pubKey->p);
 }
 
@@ -162,12 +164,15 @@ void signingAlgoritm(Signature* sign,string input_msg,PublicKey* pubKey, Private
 	unsigned char input_array[input_msg.length()] = { 0 };
 	copy(input_msg.begin(), input_msg.end(), input_array);
 
-	mpz_powm(sign->r, pubKey->g, k, pubKey->q);
+	// r = [(g^k)modp]modq
+	mpz_powm(sign->r, pubKey->g, k, pubKey->p);
+	mpz_mod(sign->r, sign->r, pubKey->q);
 	SHA1(input_array, input_msg.length(), hash);
 
 	decodeText(text, hash, 160);
 	gmp_printf("Hashed Value :\n%Zd\n\n", text);
 
+	// s = {(k^-1)*[h(m) + x*r]}modq
 	mpz_mul(sum, privKey->x, sign->r);
 	mpz_add(sum, sum, text);
 	mpz_mod(sum, sum, pubKey->q);
@@ -181,6 +186,8 @@ void signatureVerification(string input,Signature sign_ver,PublicKey pubKey)
 {
 	mpz_t s_inv, w, u1, u2, prod, v, hash_text;
 	mpz_inits(s_inv, w, u1, u2, prod, v, hash_text, NULL);
+	
+	// w = s^(-1) modq
 	mpz_invert(s_inv, sign_ver.s, pubKey.q);
 	mpz_mod(w, s_inv, pubKey.q);
 
@@ -191,50 +198,52 @@ void signatureVerification(string input,Signature sign_ver,PublicKey pubKey)
 
 	decodeText(hash_text, hash, 160);
 	gmp_printf("Hashed Value :\n%Zd\n\n", hash_text);
-
+    
+	//u1 = (h(m) * w ) modq
 	mpz_mul(u1, hash_text, w);
 	mpz_mod(u1, u1, pubKey.q);
+	//u2 = (r * w) modq
 	mpz_mul(u2, sign_ver.r, w);
 	mpz_mod(u2, u2, pubKey.q);
 
+	// v = {[(g^u1)*(y^u2)modp]modq}
 	mpz_powm(v, pubKey.g, u1, pubKey.p);
 	mpz_powm(prod, pubKey.y, u2, pubKey.p);
 	mpz_mul(v, v, prod);
 	mpz_mod(v, v, pubKey.p);
 	mpz_mod(v, v, pubKey.q);
 
-	if(mpz_cmp(v, sign_ver.r))
+	if(mpz_cmp(v, sign_ver.r) == 0)
 	{
-		cout<<"\nThe signature are not matching....Rejected";
-		gmp_printf("r :\n%Zd\n\n", sign_ver.r);
-    gmp_printf("v :\n%Zd\n\n", v);
-
+		cout<<"\nThe signature are matching....Verified";
+		gmp_printf("\nr :\n%Zd\n\n", sign_ver.r);
+    	gmp_printf("\nv :\n%Zd\n\n", v);
 	}
 	else
 	{
-		cout<<"\nThe signature are matching....Verified";
-		gmp_printf("r :\n%Zd\n\n", sign_ver.r);
-    gmp_printf("v :\n%Zd\n\n", v);
+		cout<<"\nThe signature are not matching....Rejected";
+		gmp_printf("\nr :\n%Zd\n\n", sign_ver.r);
+    	gmp_printf("\nv :\n%Zd\n\n", v);
 	}
 
 }
 
 
 int main()
-{	
-    PrivateKey privKey; 
-    PublicKey pubKey;
-    Signature sign, sign_ver;
-    mpz_t k;
-    mpz_inits(pubKey.g, pubKey.p, pubKey.y, pubKey.q, privKey.x, NULL);
-    mpz_inits(sign.r, sign.s, k, NULL);
-    int exit = 0;
+{
+	PrivateKey privKey; 
+	PublicKey pubKey;
+	Signature sign, sign_ver;
+	mpz_t k;
+	mpz_inits(pubKey.g, pubKey.p, pubKey.y, pubKey.q, privKey.x, NULL);
+	mpz_inits(sign.r, sign.s, k, NULL);
+	int exit = 0;
     gmp_randstate_t state;
-    string msg, test;
-    unsigned long int len;
+	string msg, test;
+	unsigned long int len;
 
-    cout<<"\n..........DIGITAL SIGNATURE STANDARD..........";
-    keyGeneration(&privKey, &pubKey, state);
+    cout<<"\n..........DIGITAL SIGNATURE STANDARD..........\n";
+	keyGeneration(&privKey, &pubKey, state);
     cout<<"\nPublic Key : \n";
     gmp_printf("p :\n%Zd\n\n", pubKey.p);
     gmp_printf("q :\n%Zd\n\n", pubKey.q);
@@ -243,39 +252,45 @@ int main()
 
     while(exit != 1)
     {
-        cout<<"Enter message to sign :\n";
-        cin>>test;
-        len = test.length();
+
+	  	cout<<"Enter message to sign :\n";
+		cin>>test;
+		len = test.length();
 
         cout<<"\nGenerating a random value k : ";
-        gmp_randclear(state);
-        seed++;
-        randomStateInit(state);
-        mpz_urandomm(k, state, pubKey.q);
-        gmp_printf("\n%Zd\n\n", k);
+		gmp_randclear(state);
+		seed++;
+		randomStateInit(state);
+		mpz_urandomm(k, state, pubKey.q);
+		gmp_printf("\n%Zd\n\n", k);
 
         cout<<"\nPrivate Key\n";
-        gmp_printf("x :\n%Zd\n\n", privKey.x);
+		gmp_printf("x :\n%Zd\n\n", privKey.x);
 
-        signingAlgoritm(&sign, test, &pubKey, &privKey, k);
+		signingAlgoritm(&sign, test, &pubKey, &privKey, k);
         cout<<"\nSignature\n";
-        gmp_printf("r :\n%Zd\n\n", sign.r);
-        gmp_printf("s :\n%Zd\n\n", sign.s);
+		gmp_printf("r :\n%Zd\n\n", sign.r);
+		gmp_printf("s :\n%Zd\n\n", sign.s);
 
         cout<<"\nVerification : ";
+        cout<<"\nEnter message : \n";
+        cin>>test;
+
         cout<<"\nEnter the values of Signature for verification :\n";
         cout<<"r : ";
-        cin>>sign_ver.r;
+        gmp_scanf("%Zd", sign_ver.r);
         cout<<"\ns : ";
-        cin>>sign_ver.s;
+        gmp_scanf("%Zd",sign_ver.s);
+
+        gmp_printf("\nr :\n%Zd\n\n", sign_ver.r);
+        gmp_printf("\ns :\n%Zd\n\n", sign_ver.s);
 
         signatureVerification(test, sign_ver, pubKey);
-
-        cout<<"\n\nExit (Yes : 1 | No : 0)\n";
-        cin>>exit;
+	
+		cout<<"\n\nExit (Yes : 1 | No : 0)\n";
+		cin>>exit;
     }
 
     mpz_clears(k, NULL);
-	  return 0;
+	return 0;
 }
-
