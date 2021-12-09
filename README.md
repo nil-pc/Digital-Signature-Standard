@@ -1,5 +1,5 @@
 # Digital-Signature-Standard
-Assignment6
+Assignment 6 -
 Program to verify the digital signature generated for a message using a random chosen private key
 
 # MPIR Library for bigNumber calculations
